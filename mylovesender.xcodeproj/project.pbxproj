@@ -322,7 +322,7 @@
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPABASE_URL = "https://khrnbyqtvdvhojehjegg.supabase.co/rest/v1/";
+				SUPABASE_URL = "https://khrnbyqtvdvhojehjegg.supabase.co/";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -367,7 +367,7 @@
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPABASE_URL = "https://khrnbyqtvdvhojehjegg.supabase.co/rest/v1/";
+				SUPABASE_URL = "https://khrnbyqtvdvhojehjegg.supabase.co/";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;

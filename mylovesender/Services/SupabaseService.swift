@@ -55,12 +55,12 @@ nonisolated private struct SupabaseRESTErrorBody: Decodable, Sendable {
 }
 
 nonisolated private struct InsertLetterRow: Encodable, Sendable {
-    let client_request_id: UUID
-    let title: String
-    let preview: String
-    let body: String
-    let date_label: String
-    let published_at: Date
+    let p_client_request_id: UUID
+    let p_title: String
+    let p_preview: String
+    let p_body: String
+    let p_date_label: String
+    let p_published_at: Date
 }
 
 struct SupabaseService: SupabaseServiceProtocol {
@@ -177,7 +177,7 @@ struct SupabaseService: SupabaseServiceProtocol {
 }
 
 #if canImport(Supabase)
-private struct LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
+private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
     private let client: SupabaseClient
     private let supabaseURL: URL
     private let publishableKey: String
@@ -185,7 +185,16 @@ private struct LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
     init(url: URL, publishableKey: String) {
         self.supabaseURL = url
         self.publishableKey = publishableKey
-        client = SupabaseClient(supabaseURL: url, supabaseKey: publishableKey)
+
+        self.client = SupabaseClient(
+            supabaseURL: url,
+            supabaseKey: publishableKey,
+            options: SupabaseClientOptions(
+                auth: .init(
+                    emitLocalSessionAsInitialSession: true
+                )
+            )
+        )
     }
 
     func hasCurrentSession() async -> Bool {
@@ -193,11 +202,63 @@ private struct LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
     }
 
     func restoreValidSession() async throws {
-        _ = try await client.auth.session
+        let session = try await client.auth.session
+
+        if session.isExpired {
+            _ = try await client.auth.refreshSession()
+        }
     }
 
     func signInAnonymously() async throws {
-        _ = try await client.auth.signInAnonymously()
+        if let session = client.auth.currentSession {
+            if session.isExpired {
+                do {
+                    let refreshedSession = try await client.auth.refreshSession()
+
+                    print("""
+                    MYLOVE_AUTH_REFRESHED
+                    userID=\(refreshedSession.user.id)
+                    expiresAt=\(refreshedSession.expiresAt)
+                    """)
+
+                    return
+                } catch {
+                    // Die gespeicherte Session ist nicht mehr nutzbar.
+                    // Anschließend wird eine neue anonyme Session erstellt.
+                }
+            } else {
+                print("""
+                MYLOVE_AUTH_REUSED
+                userID=\(session.user.id)
+                expiresAt=\(session.expiresAt)
+                """)
+
+                return
+            }
+        }
+
+        do {
+            let session = try await client.auth.signInAnonymously()
+
+            print("""
+            MYLOVE_AUTH_SUCCESS
+            userID=\(session.user.id)
+            expiresAt=\(session.expiresAt)
+            """)
+        } catch {
+            let nsError = error as NSError
+
+            print("""
+            MYLOVE_AUTH_FAILURE
+            error=\(String(reflecting: error))
+            description=\(error.localizedDescription)
+            domain=\(nsError.domain)
+            code=\(nsError.code)
+            userInfo=\(nsError.userInfo)
+            """)
+
+            throw error
+        }
     }
 
     func currentMailboxMembership() async throws -> MailboxMembership? {
@@ -208,44 +269,138 @@ private struct LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
             .limit(1)
             .execute()
             .value
-        guard let row = rows.first else { return nil }
-        return MailboxMembership(recipientName: row.mailboxes?.display_name ?? AppConstants.recipientName, role: row.role)
+
+        guard let row = rows.first else {
+            return nil
+        }
+
+        return MailboxMembership(
+            recipientName: row.mailboxes?.display_name
+                ?? AppConstants.recipientName,
+            role: row.role
+        )
     }
 
-    func claimMailboxPairingCode(_ normalizedCode: String) async throws -> MailboxMembership {
+    func claimMailboxPairingCode(
+        _ normalizedCode: String
+    ) async throws -> MailboxMembership {
         let session = try await client.auth.session
-        var request = URLRequest(url: supabaseURL.appending(path: "rest/v1/rpc/claim_mailbox_pairing_code"))
-        request.httpMethod = "POST"
-        request.setValue(publishableKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(ClaimPairingCodeParams(pairing_code: normalizedCode))
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else { throw AppError.sendFailed }
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            if let errorBody = try? JSONDecoder().decode(SupabaseRESTErrorBody.self, from: data) {
-                throw errorBody.signature
-            }
-            if httpResponse.statusCode == 401 { throw SupabaseErrorSignature(code: "401", message: "unauthorized") }
+        let endpoint = supabaseURL
+            .appending(path: "rest")
+            .appending(path: "v1")
+            .appending(path: "rpc")
+            .appending(path: "claim_mailbox_pairing_code")
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue(
+            publishableKey,
+            forHTTPHeaderField: "apikey"
+        )
+        request.setValue(
+            "Bearer \(session.accessToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        request.setValue(
+            "application/json",
+            forHTTPHeaderField: "Content-Type"
+        )
+        request.httpBody = try JSONEncoder().encode(
+            ClaimPairingCodeParams(
+                pairing_code: normalizedCode
+            )
+        )
+
+        let (data, response) = try await URLSession.shared.data(
+            for: request
+        )
+
+        guard let httpResponse = response as? HTTPURLResponse else {
             throw AppError.pairingUnavailable
         }
 
-        let decoded = try JSONDecoder().decode([ClaimPairingCodeResponse].self, from: data)
-        guard let membership = decoded.first else { throw AppError.invalidPairingCode }
-        return MailboxMembership(recipientName: membership.recipient_name, role: membership.role)
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            if let errorBody = try? JSONDecoder().decode(
+                SupabaseRESTErrorBody.self,
+                from: data
+            ) {
+                throw errorBody.signature
+            }
+
+            if httpResponse.statusCode == 401 {
+                throw SupabaseErrorSignature(
+                    code: "401",
+                    message: "unauthorized"
+                )
+            }
+
+            throw AppError.pairingUnavailable
+        }
+
+        let decoded = try JSONDecoder().decode(
+            [ClaimPairingCodeResponse].self,
+            from: data
+        )
+
+        guard let membership = decoded.first else {
+            throw AppError.invalidPairingCode
+        }
+
+        return MailboxMembership(
+            recipientName: membership.recipient_name,
+            role: membership.role
+        )
     }
 
     func createMailboxLetter(_ payload: LetterPayload) async throws {
+        let session = try await client.auth.session
+
+        print("""
+        MYLOVE_SEND_START
+        userID=\(session.user.id)
+        expired=\(session.isExpired)
+        requestID=\(payload.clientRequestId)
+        """)
+
         let row = InsertLetterRow(
-            client_request_id: payload.clientRequestId,
-            title: payload.title,
-            preview: payload.preview,
-            body: payload.body,
-            date_label: payload.dateLabel,
-            published_at: payload.publishedAt
+            p_client_request_id: payload.clientRequestId,
+            p_title: payload.title,
+            p_preview: payload.preview,
+            p_body: payload.body,
+            p_date_label: payload.dateLabel,
+            p_published_at: payload.publishedAt
         )
-        try await client.rpc("create_mailbox_letter", params: row).execute()
+
+        do {
+            try await client
+                .rpc("create_mailbox_letter", params: row)
+                .execute()
+
+            print("""
+            MYLOVE_SEND_SUCCESS
+            userID=\(session.user.id)
+            requestID=\(payload.clientRequestId)
+            """)
+        } catch {
+            let nsError = error as NSError
+            let signature = SupabaseErrorSignature(error: error)
+
+            print("""
+            MYLOVE_SEND_FAILURE
+            userID=\(session.user.id)
+            error=\(String(reflecting: error))
+            description=\(error.localizedDescription)
+            domain=\(nsError.domain)
+            code=\(nsError.code)
+            supabaseCode=\(signature.safeCode)
+            supabaseClass=\(signature.safeClass)
+            supabaseMessage=\(signature.message)
+            userInfo=\(nsError.userInfo)
+            """)
+
+            throw error
+        }
     }
 }
 #endif
@@ -358,7 +513,10 @@ actor MockSupabaseBackendClient: SupabaseBackendClientProtocol {
 
     func restoreValidSession() async throws {
         events.append(.restoreValidSession)
-        if let restoreError { throw restoreError }
+
+        if let restoreError {
+            throw restoreError
+        }
     }
 
     func signInAnonymously() async throws {

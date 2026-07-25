@@ -6,64 +6,34 @@ struct AppConfiguration: Sendable {
 
     static let current = AppConfiguration(bundle: .main)
 
-    init(
-        supabaseURL: URL?,
-        supabasePublishableKey: String?
-    ) {
-        if let supabaseURL,
-           supabaseURL.host?.isEmpty == false {
+    init(supabaseURL: URL?, supabasePublishableKey: String?) {
+        if let supabaseURL, supabaseURL.host?.isEmpty == false {
             self.supabaseURL = supabaseURL
         } else {
             self.supabaseURL = nil
         }
-
-        self.supabasePublishableKey =
-            supabasePublishableKey?.isPlaceholder == false
-            ? supabasePublishableKey
-            : nil
+        self.supabasePublishableKey = supabasePublishableKey?.isPlaceholder == false ? supabasePublishableKey : nil
     }
 
     init(bundle: Bundle) {
-        let rawURL = bundle.object(
-            forInfoDictionaryKey: "SUPABASE_URL"
-        ) as? String
-
-        let rawKey = bundle.object(
-            forInfoDictionaryKey: "SUPABASE_PUBLISHABLE_KEY"
-        ) as? String
-
-        if let rawURL,
-           rawURL.isPlaceholder == false,
-           let url = URL(string: rawURL.trimmed),
-           let host = url.host,
-           host.isEmpty == false {
+        let rawURL = bundle.object(forInfoDictionaryKey: "SUPABASE_URL") as? String
+        let rawKey = bundle.object(forInfoDictionaryKey: "SUPABASE_PUBLISHABLE_KEY") as? String
+        if let rawURL, rawURL.isPlaceholder == false, let url = URL(string: rawURL), url.host?.isEmpty == false {
             supabaseURL = url
         } else {
             supabaseURL = nil
         }
-
-        supabasePublishableKey =
-            rawKey?.isPlaceholder == false
-            ? rawKey?.trimmed
-            : nil
+        supabasePublishableKey = rawKey?.isPlaceholder == false ? rawKey : nil
     }
 
     var isSupabaseConfigured: Bool {
-        supabaseURL != nil &&
-        supabasePublishableKey != nil
+        supabaseURL != nil && supabasePublishableKey != nil
     }
 }
 
 private extension String {
-
     var isPlaceholder: Bool {
-        let normalizedValue = trimmed.uppercased()
-
-        return normalizedValue.isEmpty ||
-            normalizedValue.contains("$(") ||
-            normalizedValue.contains("PASTE_") ||
-            normalizedValue.contains("PLACEHOLDER") ||
-            normalizedValue.contains("HIER_")
+        trimmed.isEmpty || contains("$(") || contains("PASTE_") || contains("PLACEHOLDER") || contains("HIER_")
     }
 }
 

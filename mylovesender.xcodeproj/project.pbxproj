@@ -299,7 +299,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = MyApp/Info.plist;
+				INFOPLIST_FILE = mylovesender/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "MyLove Sender";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Die Kamera wird nur verwendet, um Bellas Pairing-QR-Code zu scannen.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "MyLove Sender verwendet Face ID, um deine Briefe vor fremdem Zugriff zu schützen.";
@@ -322,6 +322,7 @@
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPABASE_URL = "https://khrnbyqtvdvhojehjegg.supabase.co/rest/v1/";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -343,7 +344,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = MyApp/Info.plist;
+				INFOPLIST_FILE = mylovesender/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "MyLove Sender";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Die Kamera wird nur verwendet, um Bellas Pairing-QR-Code zu scannen.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "MyLove Sender verwendet Face ID, um deine Briefe vor fremdem Zugriff zu schützen.";
@@ -366,6 +367,7 @@
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPABASE_URL = "https://khrnbyqtvdvhojehjegg.supabase.co/rest/v1/";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;

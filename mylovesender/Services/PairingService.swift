@@ -7,92 +7,40 @@ protocol PairingServiceProtocol: Sendable {
 }
 
 struct PairingService: PairingServiceProtocol {
-    private let supabaseService: any SupabaseServiceProtocol
-    private let keychain: any KeychainServiceProtocol
-    private let validator: PairingCodeValidator
-
+    private let supabaseService: SupabaseServiceProtocol
+    private let keychain: KeychainServiceProtocol
+    private let validator = PairingCodeValidator()
     private let account = "mailbox-membership"
 
-    init(
-        supabaseService: any SupabaseServiceProtocol,
-        keychain: any KeychainServiceProtocol,
-        validator: PairingCodeValidator = PairingCodeValidator()
-    ) {
+    init(supabaseService: SupabaseServiceProtocol, keychain: KeychainServiceProtocol) {
         self.supabaseService = supabaseService
         self.keychain = keychain
-        self.validator = validator
     }
 
     func loadMembership() async -> MailboxMembership? {
-        if let cachedMembership = await loadCachedMembership() {
-            return cachedMembership
-        }
-
-        do {
-            guard let membership =
-                try await supabaseService.currentMailboxMembership()
-            else {
-                return nil
-            }
-
-            try await cache(membership)
-
+        if let data = try? await keychain.read(account: account),
+           let membership = try? JSONDecoder().decode(MailboxMembership.self, from: data) {
             return membership
-        } catch {
-            print("Mailbox-Mitgliedschaft konnte nicht geladen werden:", error)
-            return nil
         }
+
+        guard let membership = try? await supabaseService.currentMailboxMembership() else { return nil }
+        if let data = try? JSONEncoder().encode(membership) {
+            try? await keychain.save(data, account: account)
+        }
+        return membership
     }
 
     func claim(code: String) async throws -> MailboxMembership {
-        guard let normalizedCode =
-            validator.normalizedCode(from: code)
-        else {
-            throw AppError.validation(
-                "Der Pairing-Code hat kein gültiges Format."
-            )
+        guard let normalized = validator.normalizedCode(from: code) else {
+            throw AppError.validation("Der Pairing-Code hat kein gültiges Format.")
         }
-
-        let membership =
-            try await supabaseService.claimPairingCode(normalizedCode)
-
-        try await cache(membership)
-
+        let membership = try await supabaseService.claimPairingCode(normalized)
+        let data = try JSONEncoder().encode(membership)
+        try await keychain.save(data, account: account)
         return membership
     }
 
     func disconnect() async throws {
         try await keychain.delete(account: account)
-    }
-
-    private func loadCachedMembership() async -> MailboxMembership? {
-        do {
-            guard let data = try await keychain.read(account: account) else {
-                return nil
-            }
-
-            return try JSONDecoder().decode(
-                MailboxMembership.self,
-                from: data
-            )
-        } catch {
-            print("Gespeicherte Mitgliedschaft konnte nicht gelesen werden:", error)
-
-            // Kaputte oder veraltete Cache-Daten entfernen.
-            try? await keychain.delete(account: account)
-
-            return nil
-        }
-    }
-
-    private func cache(
-        _ membership: MailboxMembership
-    ) async throws {
-        let data = try JSONEncoder().encode(membership)
-
-        try await keychain.save(
-            data,
-            account: account
-        )
     }
 }

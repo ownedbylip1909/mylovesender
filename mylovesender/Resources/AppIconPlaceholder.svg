@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="MyLove Sender Platzhalter-App-Symbol">
+  <rect width="1024" height="1024" rx="220" fill="#120D15"/>
+  <path d="M242 356h540c44 0 80 36 80 80v306c0 44-36 80-80 80H242c-44 0-80-36-80-80V436c0-44 36-80 80-80z" fill="#D9ACFF" opacity="0.95"/>
+  <path d="M184 421l328 242 328-242" fill="none" stroke="#A83DFF" stroke-width="58" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M512 277c-56-96-198-74-218 36-24 132 164 215 218 294 54-79 242-162 218-294-20-110-162-132-218-36z" fill="#A83DFF" stroke="#F7EFFF" stroke-width="24" stroke-linejoin="round"/>
+</svg>

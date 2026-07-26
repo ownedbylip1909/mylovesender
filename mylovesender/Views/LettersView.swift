@@ -13,6 +13,9 @@ struct LettersView: View {
     private var filtered: [LetterDraft] {
         drafts
             .filter { draft in
+                !draft.isArchivedOrDeleted
+            }
+            .filter { draft in
                 selectedStatus == nil || draft.status == selectedStatus
             }
             .filter { draft in
@@ -106,6 +109,12 @@ struct LetterRow: View {
                 Text("Erstellt: \(draft.createdAt.formatted(date: .abbreviated, time: .shortened))")
                 if let publishedAt = draft.publishedAt {
                     Text("Veröffentlichung: \(publishedAt.formatted(date: .abbreviated, time: .shortened))")
+                }
+                if draft.status == .sent {
+                    Text(draft.readStatusText)
+                }
+                if !draft.attachments.isEmpty {
+                    Text("Anhänge: \(draft.attachments.count)")
                 }
             }
             .font(.caption)

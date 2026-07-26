@@ -14,6 +14,10 @@ enum AppError: Error, Equatable {
     case sendFailed
     case duplicateRequest
     case storageFailed
+    case attachmentTooLarge
+    case unsupportedAttachmentType
+    case attachmentUploadFailed
+    case attachmentBackendUnavailable
 
     var userMessage: String {
         switch self {
@@ -30,6 +34,10 @@ enum AppError: Error, Equatable {
         case .sendFailed: "Der Brief konnte nicht gesendet werden. Dein Entwurf bleibt erhalten."
         case .duplicateRequest: "Dieser Brief wurde bereits mit derselben Anfrage verarbeitet."
         case .storageFailed: "Der lokale Speicher konnte nicht aktualisiert werden."
+        case .attachmentTooLarge: "Der Anhang ist zu groß. Erlaubt sind maximal 6 MB pro Datei."
+        case .unsupportedAttachmentType: "Dieser Dateityp wird nicht unterstützt. Erlaubt sind JPEG, PNG, WebP und HEIC."
+        case .attachmentUploadFailed: "Der Anhang konnte nicht hochgeladen werden. Dein Brief bleibt lokal erhalten."
+        case .attachmentBackendUnavailable: "Das Backend für Anhänge ist noch nicht vollständig eingerichtet."
         }
     }
 }
@@ -49,6 +57,10 @@ struct LetterValidator: Sendable {
     func status(for publishedAt: Date, now: Date = .now) -> LetterStatus {
         publishedAt > now ? .scheduled : .sent
     }
+
+    func serverStatus(for publishedAt: Date, now: Date = .now) -> ServerLetterStatus {
+        publishedAt > now ? .scheduled : .published
+    }
 }
 
 struct PairingCodeValidator: Sendable {
@@ -59,5 +71,26 @@ struct PairingCodeValidator: Sendable {
         let compact = code.replacingOccurrences(of: "-", with: "")
         guard (12...32).contains(compact.count) else { return nil }
         return compact
+    }
+}
+
+struct AttachmentValidator: Sendable {
+    nonisolated init() { }
+
+    nonisolated static let maximumSizeBytes = 6 * 1024 * 1024
+    nonisolated static let allowedMimeTypes: Set<String> = [
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/heic"
+    ]
+
+    nonisolated func validate(mimeType: String, sizeBytes: Int) throws {
+        guard Self.allowedMimeTypes.contains(mimeType) else {
+            throw AppError.unsupportedAttachmentType
+        }
+        guard (1...Self.maximumSizeBytes).contains(sizeBytes) else {
+            throw AppError.attachmentTooLarge
+        }
     }
 }

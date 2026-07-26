@@ -86,7 +86,7 @@ struct MyLoveSenderUnitTests {
 
     @Test func draftMapsToPayloadWithoutServerIds() {
         let draft = LetterDraft(title: "Titel", preview: "Kurz", body: "Text", dateLabel: "HEUTE", publishedAt: .now)
-        let payload = LetterPayload(clientRequestId: draft.clientRequestId, title: draft.title, preview: draft.normalizedPreview, body: draft.body, dateLabel: draft.dateLabel, publishedAt: draft.publishedAt ?? .now)
+        let payload = LetterPayload(clientRequestId: draft.clientRequestId, title: draft.title, preview: draft.normalizedPreview, body: draft.body, dateLabel: draft.dateLabel, publishedAt: draft.publishedAt ?? .now, serverStatus: .published)
         #expect(payload.clientRequestId == draft.clientRequestId)
         #expect(payload.title == "Titel")
     }
@@ -122,8 +122,60 @@ struct MyLoveSenderUnitTests {
         #expect(draft.clientRequestId == first)
     }
 
+    @Test func attachmentValidatorAcceptsSupportedSmallImage() throws {
+        try AttachmentValidator().validate(mimeType: "image/png", sizeBytes: 1024)
+    }
+
+    @Test func attachmentValidatorRejectsOversizedImage() throws {
+        #expect(throws: AppError.attachmentTooLarge) {
+            try AttachmentValidator().validate(mimeType: "image/png", sizeBytes: AttachmentValidator.maximumSizeBytes + 1)
+        }
+    }
+
+    @Test func attachmentValidatorRejectsUnsupportedMimeType() throws {
+        #expect(throws: AppError.unsupportedAttachmentType) {
+            try AttachmentValidator().validate(mimeType: "application/pdf", sizeBytes: 1024)
+        }
+    }
+
+    @Test func serverStatusMapsScheduledPublicationDate() {
+        let status = LetterValidator().serverStatus(for: Date().addingTimeInterval(3600))
+        #expect(status == .scheduled)
+    }
+
+    @Test func editingSentLetterReusesClientRequestIdForServerUpdate() async throws {
+        let backend = MockSupabaseBackendClient(hasSession: true)
+        let service = SupabaseService(configuration: configuredTestConfiguration, backend: backend)
+        let pairing = StaticPairingService(membership: MailboxMembership(recipientName: "Bella", role: "sender"))
+        let repository = LetterRepository(supabaseService: service, pairingService: pairing)
+        let container = try ModelContainer(for: LetterDraft.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let draft = LetterDraft(title: "Titel", body: "Text", publishedAt: .now, status: .sent)
+        let requestId = draft.clientRequestId
+        container.mainContext.insert(draft)
+
+        try await repository.send(draft, context: container.mainContext)
+        draft.body = "Aktualisierter Text"
+        try await repository.send(draft, context: container.mainContext)
+
+        let createEvents = await backend.events.filter { $0 == .createMailboxLetter }
+        #expect(draft.clientRequestId == requestId)
+        #expect(createEvents.count == 2)
+        #expect(draft.status == .sent)
+    }
+
     private var configuredTestConfiguration: AppConfiguration {
         AppConfiguration(supabaseURL: URL(string: "https://example.supabase.co")!, supabasePublishableKey: "test-publishable-key")
     }
+}
+
+private struct StaticPairingService: PairingServiceProtocol {
+    let membership: MailboxMembership?
+
+    func loadMembership() async -> MailboxMembership? { membership }
+    func claim(code: String) async throws -> MailboxMembership {
+        guard let membership else { throw AppError.notPaired }
+        return membership
+    }
+    func disconnect() async throws { }
 }
 #endif

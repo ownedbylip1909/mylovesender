@@ -15,6 +15,8 @@ Native SwiftUI-iPhone-App zum Schreiben lokaler Entwuerfe und zum spaeteren Send
 
 Die App simuliert keine erfolgreiche Verbindung. Ohne RPC `claim_mailbox_pairing_code` bleibt der Status ehrlich bei `Nicht verbunden` beziehungsweise `Verbindung fehlgeschlagen`. Der sichere Backend-Vorschlag liegt in `Supabase/required_pairing_backend.sql`.
 
+Damit bearbeitete Briefe in Supabase aktualisiert werden, muss `create_mailbox_letter` den vorhandenen Datensatz anhand von `(mailbox_id, client_request_id)` per `on conflict ... do update` aktualisieren. Die aktuelle SQL-Datei enthaelt diese Aenderung.
+
 ## App Icon
 
 `Resources/AppIconPlaceholder.svg` ist ein vektorbasiertes Platzhalter-Icon. Wenn Xcode Rasterbilder verlangt, ersetze die AppIcon-Slots im Asset Catalog mit finalen PNGs fuer alle iOS-App-Icon-Groessen, besonders 1024x1024 fuer App Store/Organizer und die iPhone-Home-Screen-Groessen.

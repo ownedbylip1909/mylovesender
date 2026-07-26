@@ -1,20 +1,28 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
+import UniformTypeIdentifiers
 
 struct LetterEditorView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppViewModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
     @State private var draft: LetterDraft
-    @State private var sendMode: SendMode = .now
+    @State private var sendMode: SendMode
     @State private var showingPreview = false
     @State private var showingConfirm = false
+    @State private var showingFileImporter = false
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var errorMessage: String?
+    @State private var uploadStatusMessage: String?
+    @State private var isSending = false
     @State private var successEffect = false
     @FocusState private var focusedField: EditorField?
 
     init(draft: LetterDraft?) {
-        _draft = State(initialValue: draft ?? LetterDraft())
+        let initialDraft = draft ?? LetterDraft()
+        _draft = State(initialValue: initialDraft)
+        _sendMode = State(initialValue: Self.initialSendMode(for: initialDraft, isNewDraft: draft == nil))
     }
 
     var body: some View {
@@ -58,11 +66,23 @@ struct LetterEditorView: View {
                     }
                 }
 
+                Section("Anhänge") {
+                    attachmentActions
+                    attachmentList
+                    Text("Maximal 6 MB pro Datei. Erlaubt sind JPEG, PNG, WebP und HEIC.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let uploadStatusMessage {
+                    Section { ProgressView(uploadStatusMessage) }
+                }
+
                 if let errorMessage {
                     Section { Text(errorMessage).foregroundStyle(.secondary) }
                 }
             }
-            .navigationTitle(draft.title.trimmed.isEmpty ? "Neuer Brief" : "Brief")
+            .navigationTitle(navigationTitle)
             .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Speichern") { saveDraft() } }
@@ -73,12 +93,26 @@ struct LetterEditorView: View {
                 }
             }
             .onChange(of: draft.title) { _, _ in autosave() }
+            .onChange(of: draft.preview) { _, _ in autosave() }
             .onChange(of: draft.body) { _, _ in autosave() }
+            .onChange(of: draft.dateLabel) { _, _ in autosave() }
+            .onChange(of: draft.signature) { _, _ in autosave() }
+            .onChange(of: draft.publishedAt) { _, _ in autosave() }
+            .onChange(of: selectedPhotoItems) { _, items in
+                Task { await importPhotos(items) }
+            }
+            .fileImporter(
+                isPresented: $showingFileImporter,
+                allowedContentTypes: AttachmentImport.allowedContentTypes,
+                allowsMultipleSelection: true,
+                onCompletion: importFiles
+            )
             .safeAreaInset(edge: .bottom) {
                 Button(action: primaryAction) {
                     Label(primaryTitle, systemImage: sendMode == .draft ? "tray.and.arrow.down" : "paperplane.fill")
                         .frame(maxWidth: .infinity)
                 }
+                .disabled(isSending)
                 .buttonStyle(.borderedProminent)
                 .tint(LoveTheme.accent)
                 .controlSize(.large)
@@ -86,11 +120,11 @@ struct LetterEditorView: View {
                 .background(.bar)
             }
             .sheet(isPresented: $showingPreview) { LetterPreviewSheet(draft: draft) }
-            .confirmationDialog("Brief endgültig senden?", isPresented: $showingConfirm, titleVisibility: .visible) {
-                Button("Senden") { Task { await send() } }
+            .confirmationDialog(confirmTitle, isPresented: $showingConfirm, titleVisibility: .visible) {
+                Button(confirmButtonTitle) { Task { await send() } }
                 Button("Abbrechen", role: .cancel) { }
             } message: {
-                Text("Nach dem Senden erscheint der Brief bei Bella erst zum Veröffentlichungszeitpunkt.")
+                Text(confirmMessage)
             }
             .overlay(alignment: .top) {
                 if successEffect { Label("Gespeichert", systemImage: "checkmark.circle.fill").padding().background(.regularMaterial, in: Capsule()) }
@@ -98,17 +132,102 @@ struct LetterEditorView: View {
         }
     }
 
-    private var primaryTitle: String { sendMode == .draft ? "Als Entwurf speichern" : "Senden" }
+    @ViewBuilder
+    private var attachmentActions: some View {
+        HStack(spacing: 12) {
+            PhotosPicker(
+                selection: $selectedPhotoItems,
+                maxSelectionCount: max(0, AttachmentImport.maximumAttachmentCount - draft.attachments.count),
+                matching: .images,
+                preferredItemEncoding: .current
+            ) {
+                Label("Fotos", systemImage: "photo.on.rectangle")
+            }
+            .disabled(draft.attachments.count >= AttachmentImport.maximumAttachmentCount || isSending)
+
+            Button {
+                showingFileImporter = true
+            } label: {
+                Label("Dateien", systemImage: "paperclip")
+            }
+            .disabled(draft.attachments.count >= AttachmentImport.maximumAttachmentCount || isSending)
+        }
+    }
+
+    @ViewBuilder
+    private var attachmentList: some View {
+        let attachments = draft.attachments
+        if attachments.isEmpty {
+            Text("Keine Anhänge ausgewählt")
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(attachments) { attachment in
+                HStack(spacing: 12) {
+                    Image(systemName: "photo")
+                        .foregroundStyle(LoveTheme.accent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(attachment.fileName)
+                            .lineLimit(1)
+                        Text("\(attachment.mimeType), \(attachment.sizeBytes.formatted(.byteCount(style: .file)))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        removeAttachment(attachment)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Anhang entfernen")
+                }
+            }
+        }
+    }
+
+    private var navigationTitle: String {
+        if draft.title.trimmed.isEmpty { return draft.status == .draft ? "Neuer Brief" : "Brief bearbeiten" }
+        return draft.status == .draft ? "Brief" : "Bearbeiten"
+    }
+
+    private var primaryTitle: String {
+        if sendMode == .draft { return "Lokal speichern" }
+        return draft.status == .sent || draft.status == .scheduled ? "Änderungen senden" : "Senden"
+    }
+
+    private var confirmTitle: String {
+        draft.status == .sent || draft.status == .scheduled ? "Änderungen an Bella senden?" : "Brief endgültig senden?"
+    }
+
+    private var confirmButtonTitle: String {
+        draft.status == .sent || draft.status == .scheduled ? "Aktualisieren" : "Senden"
+    }
+
+    private var confirmMessage: String {
+        if draft.status == .sent || draft.status == .scheduled {
+            return "Die gespeicherte Version dieses Briefs wird aktualisiert. Bella sieht Änderungen erst zum Veröffentlichungszeitpunkt."
+        }
+        return "Nach dem Senden erscheint der Brief bei Bella erst zum Veröffentlichungszeitpunkt."
+    }
+
+    private static func initialSendMode(for draft: LetterDraft, isNewDraft: Bool) -> SendMode {
+        if isNewDraft { return .now }
+        switch draft.status {
+        case .draft, .failed: return .draft
+        case .scheduled: return .scheduled
+        case .sent, .sending: return .now
+        }
+    }
 
     private func primaryAction() {
         if sendMode == .draft { saveDraft() } else { showingConfirm = true }
     }
 
-    private func autosave() { try? saveWithoutEffect() }
+    private func autosave() { try? saveWithoutEffect(markAsDraft: false) }
 
     private func saveDraft() {
         do {
-            try saveWithoutEffect()
+            try saveWithoutEffect(markAsDraft: draft.status == .draft || draft.status == .failed)
             successEffect = true
             Task { try? await Task.sleep(for: .seconds(1)); successEffect = false }
         } catch {
@@ -116,14 +235,90 @@ struct LetterEditorView: View {
         }
     }
 
-    private func saveWithoutEffect() throws {
-        draft.status = .draft
+    private func saveWithoutEffect(markAsDraft: Bool) throws {
+        if markAsDraft { draft.status = .draft }
         draft.updatedAt = .now
         modelContext.insert(draft)
         try modelContext.save()
     }
 
+    private func importPhotos(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty else { return }
+        do {
+            var attachments = draft.attachments
+            for item in items where attachments.count < AttachmentImport.maximumAttachmentCount {
+                let mimeType = AttachmentImport.mimeType(for: item.supportedContentTypes)
+                guard let mimeType else { throw AppError.unsupportedAttachmentType }
+                guard let data = try await item.loadTransferable(type: Data.self) else { continue }
+                try AttachmentValidator().validate(mimeType: mimeType, sizeBytes: data.count)
+                attachments.append(
+                    LetterAttachment(
+                        fileName: "Foto \(attachments.count + 1).\(AttachmentImport.fileExtension(for: mimeType))",
+                        mimeType: mimeType,
+                        sizeBytes: data.count,
+                        data: data
+                    )
+                )
+            }
+            draft.attachments = attachments
+            try saveWithoutEffect(markAsDraft: false)
+        } catch let appError as AppError {
+            errorMessage = appError.userMessage
+        } catch {
+            errorMessage = AppError.storageFailed.userMessage
+        }
+        selectedPhotoItems = []
+    }
+
+    private func importFiles(_ result: Result<[URL], any Error>) {
+        do {
+            let urls = try result.get()
+            var attachments = draft.attachments
+            for url in urls where attachments.count < AttachmentImport.maximumAttachmentCount {
+                let didStartAccessing = url.startAccessingSecurityScopedResource()
+                defer {
+                    if didStartAccessing { url.stopAccessingSecurityScopedResource() }
+                }
+                let values = try url.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey, .localizedNameKey])
+                guard let mimeType = values.contentType?.preferredMIMEType,
+                      AttachmentValidator.allowedMimeTypes.contains(mimeType) else {
+                    throw AppError.unsupportedAttachmentType
+                }
+                let data = try Data(contentsOf: url)
+                let sizeBytes = values.fileSize ?? data.count
+                try AttachmentValidator().validate(mimeType: mimeType, sizeBytes: sizeBytes)
+                attachments.append(
+                    LetterAttachment(
+                        fileName: values.localizedName ?? url.lastPathComponent,
+                        mimeType: mimeType,
+                        sizeBytes: sizeBytes,
+                        data: data
+                    )
+                )
+            }
+            draft.attachments = attachments
+            try saveWithoutEffect(markAsDraft: false)
+        } catch let appError as AppError {
+            errorMessage = appError.userMessage
+        } catch {
+            errorMessage = AppError.storageFailed.userMessage
+        }
+    }
+
+    private func removeAttachment(_ attachment: LetterAttachment) {
+        draft.attachments = draft.attachments.filter { $0.id != attachment.id }
+        autosave()
+    }
+
     private func send() async {
+        guard !isSending else { return }
+        isSending = true
+        uploadStatusMessage = draft.attachments.isEmpty ? "Brief wird gesendet ..." : "Brief und Anhänge werden hochgeladen ..."
+        defer {
+            isSending = false
+            uploadStatusMessage = nil
+        }
+
         let publishedAt = sendMode == .scheduled ? (draft.publishedAt ?? Date().addingTimeInterval(3600)) : .now
         draft.publishedAt = publishedAt
         let validation = appModel.validator.validate(title: draft.title, body: draft.body, dateLabel: draft.dateLabel, publishedAt: publishedAt)
@@ -147,6 +342,27 @@ struct LetterEditorView: View {
 enum SendMode: Hashable { case now, scheduled, draft }
 
 enum EditorField: Hashable { case title, preview, body, signature }
+
+enum AttachmentImport {
+    static let maximumAttachmentCount = 8
+    static let allowedContentTypes: [UTType] = [.jpeg, .png, .webP, .heic]
+
+    static func mimeType(for contentTypes: [UTType]) -> String? {
+        contentTypes
+            .compactMap(\.preferredMIMEType)
+            .first { AttachmentValidator.allowedMimeTypes.contains($0) }
+    }
+
+    static func fileExtension(for mimeType: String) -> String {
+        switch mimeType {
+        case "image/jpeg": "jpg"
+        case "image/png": "png"
+        case "image/webp": "webp"
+        case "image/heic": "heic"
+        default: "img"
+        }
+    }
+}
 
 struct LetterPreviewSheet: View {
     let draft: LetterDraft

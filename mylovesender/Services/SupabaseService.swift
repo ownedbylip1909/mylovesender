@@ -32,6 +32,7 @@ nonisolated private struct MailboxMembershipRow: Decodable, Sendable {
         let display_name: String?
     }
 
+    let mailbox_id: UUID?
     let role: String
     let mailboxes: Mailbox?
 }
@@ -61,6 +62,29 @@ nonisolated private struct InsertLetterRow: Encodable, Sendable {
     let p_body: String
     let p_date_label: String
     let p_published_at: Date
+}
+
+nonisolated private struct InsertLetterWithResultRow: Encodable, Sendable {
+    let p_client_request_id: UUID
+    let p_title: String
+    let p_preview: String
+    let p_body: String
+    let p_date_label: String
+    let p_published_at: Date
+    let p_status: String
+}
+
+nonisolated private struct CreatedLetterRow: Decodable, Sendable {
+    let letter_id: UUID
+    let mailbox_id: UUID
+}
+
+nonisolated private struct InsertAttachmentMetadataRow: Encodable, Sendable {
+    let letter_id: UUID
+    let mailbox_id: UUID
+    let storage_path: String
+    let mime_type: String
+    let size_bytes: Int
 }
 
 struct SupabaseService: SupabaseServiceProtocol {
@@ -164,8 +188,10 @@ struct SupabaseService: SupabaseServiceProtocol {
         if error.isNetworkConnectivityError { return .offline }
 
         let signature = SupabaseErrorSignature(error: error)
+        if signature.isFunctionMissing { return .attachmentBackendUnavailable }
         if signature.isUnauthenticatedOrForbidden { return .secureSessionFailed }
         if signature.contains("not_paired") { return .notPaired }
+        if signature.contains("attachment") || signature.contains("storage") { return .attachmentUploadFailed }
         return .sendFailed
     }
 
@@ -215,48 +241,26 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
                 do {
                     let refreshedSession = try await client.auth.refreshSession()
 
-                    print("""
-                    MYLOVE_AUTH_REFRESHED
-                    userID=\(refreshedSession.user.id)
-                    expiresAt=\(refreshedSession.expiresAt)
-                    """)
-
+                    _ = refreshedSession
+                    print("MYLOVE_AUTH_REFRESHED")
                     return
                 } catch {
                     // Die gespeicherte Session ist nicht mehr nutzbar.
                     // Anschließend wird eine neue anonyme Session erstellt.
                 }
             } else {
-                print("""
-                MYLOVE_AUTH_REUSED
-                userID=\(session.user.id)
-                expiresAt=\(session.expiresAt)
-                """)
-
+                _ = session
+                print("MYLOVE_AUTH_REUSED")
                 return
             }
         }
 
         do {
-            let session = try await client.auth.signInAnonymously()
-
-            print("""
-            MYLOVE_AUTH_SUCCESS
-            userID=\(session.user.id)
-            expiresAt=\(session.expiresAt)
-            """)
+            _ = try await client.auth.signInAnonymously()
+            print("MYLOVE_AUTH_SUCCESS")
         } catch {
             let nsError = error as NSError
-
-            print("""
-            MYLOVE_AUTH_FAILURE
-            error=\(String(reflecting: error))
-            description=\(error.localizedDescription)
-            domain=\(nsError.domain)
-            code=\(nsError.code)
-            userInfo=\(nsError.userInfo)
-            """)
-
+            print("MYLOVE_AUTH_FAILURE domain=\(nsError.domain) code=\(nsError.code)")
             throw error
         }
     }
@@ -264,7 +268,7 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
     func currentMailboxMembership() async throws -> MailboxMembership? {
         let rows: [MailboxMembershipRow] = try await client
             .from("mailbox_members")
-            .select("role, mailboxes(display_name)")
+            .select("mailbox_id, role, mailboxes(display_name)")
             .eq("role", value: "sender")
             .limit(1)
             .execute()
@@ -276,8 +280,9 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
 
         return MailboxMembership(
             recipientName: row.mailboxes?.display_name
-                ?? AppConstants.recipientName,
-            role: row.role
+                ?? "Bella",
+            role: row.role,
+            mailboxId: row.mailbox_id
         )
     }
 
@@ -347,6 +352,10 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
             throw AppError.invalidPairingCode
         }
 
+        if let currentMembership = try? await currentMailboxMembership() {
+            return currentMembership
+        }
+
         return MailboxMembership(
             recipientName: membership.recipient_name,
             role: membership.role
@@ -354,15 +363,30 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
     }
 
     func createMailboxLetter(_ payload: LetterPayload) async throws {
-        let session = try await client.auth.session
+        _ = try await client.auth.session
+        print("MYLOVE_SEND_START")
 
-        print("""
-        MYLOVE_SEND_START
-        userID=\(session.user.id)
-        expired=\(session.isExpired)
-        requestID=\(payload.clientRequestId)
-        """)
+        do {
+            if payload.attachments.isEmpty {
+                try await createLegacyMailboxLetter(payload)
+            } else {
+                let createdLetter = try await createMailboxLetterWithResult(payload)
+                try await uploadAttachments(payload.attachments, for: createdLetter)
+            }
 
+            print("MYLOVE_SEND_SUCCESS")
+        } catch let appError as AppError {
+            throw appError
+        } catch {
+            let nsError = error as NSError
+            let signature = SupabaseErrorSignature(error: error)
+
+            print("MYLOVE_SEND_FAILURE domain=\(nsError.domain) code=\(nsError.code) supabaseCode=\(signature.safeCode) supabaseClass=\(signature.safeClass)")
+            throw error
+        }
+    }
+
+    private func createLegacyMailboxLetter(_ payload: LetterPayload) async throws {
         let row = InsertLetterRow(
             p_client_request_id: payload.clientRequestId,
             p_title: payload.title,
@@ -372,35 +396,91 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
             p_published_at: payload.publishedAt
         )
 
+        try await client
+            .rpc("create_mailbox_letter", params: row)
+            .execute()
+    }
+
+    private func createMailboxLetterWithResult(_ payload: LetterPayload) async throws -> CreatedLetterRow {
+        let row = InsertLetterWithResultRow(
+            p_client_request_id: payload.clientRequestId,
+            p_title: payload.title,
+            p_preview: payload.preview,
+            p_body: payload.body,
+            p_date_label: payload.dateLabel,
+            p_published_at: payload.publishedAt,
+            p_status: payload.serverStatus.rawValue
+        )
+
         do {
-            try await client
-                .rpc("create_mailbox_letter", params: row)
+            let response: [CreatedLetterRow] = try await client
+                .rpc("create_mailbox_letter_with_result", params: row)
                 .execute()
+                .value
 
-            print("""
-            MYLOVE_SEND_SUCCESS
-            userID=\(session.user.id)
-            requestID=\(payload.clientRequestId)
-            """)
+            guard let createdLetter = response.first else {
+                throw AppError.attachmentBackendUnavailable
+            }
+
+            return createdLetter
         } catch {
-            let nsError = error as NSError
-            let signature = SupabaseErrorSignature(error: error)
-
-            print("""
-            MYLOVE_SEND_FAILURE
-            userID=\(session.user.id)
-            error=\(String(reflecting: error))
-            description=\(error.localizedDescription)
-            domain=\(nsError.domain)
-            code=\(nsError.code)
-            supabaseCode=\(signature.safeCode)
-            supabaseClass=\(signature.safeClass)
-            supabaseMessage=\(signature.message)
-            userInfo=\(nsError.userInfo)
-            """)
-
+            if SupabaseErrorSignature(error: error).isFunctionMissing {
+                throw AppError.attachmentBackendUnavailable
+            }
             throw error
         }
+    }
+
+    private func uploadAttachments(_ attachments: [LetterAttachment], for createdLetter: CreatedLetterRow) async throws {
+        let validator = AttachmentValidator()
+        for attachment in attachments {
+            try validator.validate(mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes)
+            let storagePath = attachmentStoragePath(
+                mailboxId: createdLetter.mailbox_id,
+                letterId: createdLetter.letter_id,
+                attachment: attachment
+            )
+            var objectUploaded = false
+
+            do {
+                try await client.storage
+                    .from("letter-attachments")
+                    .upload(
+                        storagePath,
+                        data: attachment.data,
+                        options: FileOptions(
+                            contentType: attachment.mimeType,
+                            upsert: false
+                        )
+                    )
+                objectUploaded = true
+
+                let metadata = InsertAttachmentMetadataRow(
+                    letter_id: createdLetter.letter_id,
+                    mailbox_id: createdLetter.mailbox_id,
+                    storage_path: storagePath,
+                    mime_type: attachment.mimeType,
+                    size_bytes: attachment.sizeBytes
+                )
+
+                try await client
+                    .from("letter_attachments")
+                    .insert(metadata)
+                    .execute()
+            } catch {
+                if objectUploaded {
+                    _ = try? await client.storage
+                        .from("letter-attachments")
+                        .remove(paths: [storagePath])
+                }
+                throw AppError.attachmentUploadFailed
+            }
+        }
+    }
+
+    private func attachmentStoragePath(mailboxId: UUID, letterId: UUID, attachment: LetterAttachment) -> String {
+        let fileExtension = attachment.fileName.fileExtension(for: attachment.mimeType)
+        return "\(mailboxId.uuidString)/\(letterId.uuidString)/\(attachment.id.uuidString).\(fileExtension)"
     }
 }
 #endif
@@ -451,6 +531,23 @@ struct SupabaseErrorSignature: Error, Sendable {
 
     func contains(_ value: String) -> Bool {
         code?.localizedCaseInsensitiveContains(value) == true || message.localizedCaseInsensitiveContains(value)
+    }
+}
+
+private extension String {
+    nonisolated func fileExtension(for mimeType: String) -> String {
+        let currentExtension = (self as NSString).pathExtension.lowercased()
+        if ["jpg", "jpeg", "png", "webp", "heic"].contains(currentExtension) {
+            return currentExtension == "jpeg" ? "jpg" : currentExtension
+        }
+
+        switch mimeType {
+        case "image/jpeg": return "jpg"
+        case "image/png": return "png"
+        case "image/webp": return "webp"
+        case "image/heic": return "heic"
+        default: return "img"
+        }
     }
 }
 

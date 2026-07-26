@@ -280,6 +280,8 @@ begin
         owner_id,
         mailbox_id,
         client_request_id,
+        sender_user_id,
+        status,
         title,
         preview,
         body,
@@ -292,6 +294,11 @@ begin
         target_recipient,
         target_mailbox,
         create_mailbox_letter.client_request_id,
+        auth.uid(),
+        case when coalesce(create_mailbox_letter.published_at, now()) > now()
+             then 'scheduled'
+             else 'published'
+        end,
         trim(create_mailbox_letter.title),
         left(trim(coalesce(create_mailbox_letter.preview, '')), 280),
         trim(create_mailbox_letter.body),
@@ -301,7 +308,106 @@ begin
     )
     on conflict (mailbox_id, client_request_id)
     where client_request_id is not null
-    do nothing;
+    do update set
+        title = excluded.title,
+        preview = excluded.preview,
+        body = excluded.body,
+        date_label = excluded.date_label,
+        published_at = excluded.published_at,
+        status = excluded.status;
+end;
+$$;
+
+-- Optional RPC for iOS attachment uploads. Existing create_mailbox_letter remains supported.
+create or replace function public.create_mailbox_letter_with_result(
+    p_client_request_id uuid,
+    p_title text,
+    p_preview text,
+    p_body text,
+    p_date_label text,
+    p_published_at timestamptz,
+    p_status text default 'published'
+)
+returns table (letter_id uuid, mailbox_id uuid)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+    target_mailbox uuid;
+    target_recipient uuid;
+    normalized_status text;
+begin
+    if auth.uid() is null then
+        raise exception 'not_authenticated';
+    end if;
+    if p_client_request_id is null then
+        raise exception 'missing_client_request_id';
+    end if;
+    if length(trim(coalesce(p_title, ''))) = 0
+       or length(trim(coalesce(p_body, ''))) = 0 then
+        raise exception 'invalid_letter';
+    end if;
+
+    normalized_status := coalesce(nullif(trim(p_status), ''), 'published');
+    if normalized_status not in ('draft', 'scheduled', 'published') then
+        raise exception 'invalid_letter_status';
+    end if;
+
+    select mm.mailbox_id, m.recipient_user_id
+    into target_mailbox, target_recipient
+    from public.mailbox_members mm
+    join public.mailboxes m on m.id = mm.mailbox_id
+    where mm.user_id = auth.uid()
+      and mm.role = 'sender'
+    order by mm.created_at asc
+    limit 1;
+
+    if target_mailbox is null then
+        raise exception 'not_paired';
+    end if;
+
+    insert into public.letters(
+        id,
+        owner_id,
+        mailbox_id,
+        client_request_id,
+        sender_user_id,
+        status,
+        title,
+        preview,
+        body,
+        date_label,
+        published_at,
+        created_at
+    )
+    values (
+        gen_random_uuid(),
+        target_recipient,
+        target_mailbox,
+        p_client_request_id,
+        auth.uid(),
+        normalized_status,
+        trim(p_title),
+        left(trim(coalesce(p_preview, '')), 280),
+        trim(p_body),
+        left(trim(coalesce(p_date_label, 'NEU')), 80),
+        coalesce(p_published_at, now()),
+        now()
+    )
+    on conflict (mailbox_id, client_request_id)
+    where client_request_id is not null
+    do update set
+        title = excluded.title,
+        preview = excluded.preview,
+        body = excluded.body,
+        date_label = excluded.date_label,
+        published_at = excluded.published_at,
+        status = excluded.status
+    returning public.letters.id, public.letters.mailbox_id
+    into letter_id, mailbox_id;
+
+    return next;
 end;
 $$;
 
@@ -312,10 +418,16 @@ revoke all on function public.claim_mailbox_pairing_code(text) from public, anon
 revoke all on function public.create_mailbox_letter(
     uuid, text, text, text, text, timestamptz
 ) from public, anon;
+revoke all on function public.create_mailbox_letter_with_result(
+    uuid, text, text, text, text, timestamptz, text
+) from public, anon;
 
 grant execute on function public.ensure_recipient_mailbox(text) to authenticated;
 grant execute on function public.create_mailbox_pairing_code(text, int) to authenticated;
 grant execute on function public.claim_mailbox_pairing_code(text) to authenticated;
 grant execute on function public.create_mailbox_letter(
     uuid, text, text, text, text, timestamptz
+) to authenticated;
+grant execute on function public.create_mailbox_letter_with_result(
+    uuid, text, text, text, text, timestamptz, text
 ) to authenticated;

@@ -31,11 +31,14 @@ struct LetterRepository: LetterRepositoryProtocol {
             preview: draft.normalizedPreview,
             body: draft.body.trimmed,
             dateLabel: draft.dateLabel.trimmed,
-            publishedAt: publishedAt
+            publishedAt: publishedAt,
+            serverStatus: validator.serverStatus(for: publishedAt),
+            attachments: draft.attachments
         )
         do {
             try await supabaseService.sendLetter(payload)
             draft.publishedAt = publishedAt
+            draft.serverStatus = validator.serverStatus(for: publishedAt)
             draft.status = validator.status(for: publishedAt)
             draft.lastErrorMessage = nil
             try context.save()

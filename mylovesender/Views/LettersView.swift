@@ -58,6 +58,12 @@ struct LettersView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
+            .task {
+                await appModel.letterRepository.refreshStatuses(context: modelContext)
+            }
+            .refreshable {
+                await appModel.letterRepository.refreshStatuses(context: modelContext)
+            }
         }
     }
 
@@ -75,6 +81,9 @@ struct LettersView: View {
                             Button("Erneut") { retry(draft) }
                                 .tint(LoveTheme.accent)
                         }
+                        Button("Lokal löschen", role: .destructive) {
+                            deleteLocal(draft)
+                        }
                     }
             }
         }
@@ -85,6 +94,15 @@ struct LettersView: View {
             do { try await appModel.letterRepository.send(draft, context: modelContext) }
             catch let appError as AppError { errorMessage = appError.userMessage }
             catch { errorMessage = AppError.sendFailed.userMessage }
+        }
+    }
+
+    private func deleteLocal(_ draft: LetterDraft) {
+        modelContext.delete(draft)
+        do {
+            try modelContext.save()
+        } catch {
+            errorMessage = AppError.storageFailed.userMessage
         }
     }
 }

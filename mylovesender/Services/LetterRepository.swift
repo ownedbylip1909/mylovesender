@@ -3,6 +3,7 @@ import SwiftData
 
 protocol LetterRepositoryProtocol: Sendable {
     @MainActor func send(_ draft: LetterDraft, context: ModelContext) async throws
+    @MainActor func refreshStatuses(context: ModelContext) async
 }
 
 struct LetterRepository: LetterRepositoryProtocol {
@@ -12,7 +13,8 @@ struct LetterRepository: LetterRepositoryProtocol {
 
     @MainActor
     func send(_ draft: LetterDraft, context: ModelContext) async throws {
-        guard await pairingService.loadMembership() != nil else {
+        guard let membership = await pairingService.loadMembership(),
+              let mailboxId = membership.mailboxId else {
             draft.status = .failed
             draft.lastErrorMessage = AppError.notPaired.userMessage
             try? context.save()
@@ -26,6 +28,7 @@ struct LetterRepository: LetterRepositoryProtocol {
         draft.lastErrorMessage = nil
         try context.save()
         let payload = LetterPayload(
+            mailboxId: mailboxId,
             clientRequestId: draft.clientRequestId,
             title: draft.title.trimmed,
             preview: draft.normalizedPreview,
@@ -53,5 +56,32 @@ struct LetterRepository: LetterRepositoryProtocol {
             try? context.save()
             throw AppError.sendFailed
         }
+    }
+
+    @MainActor
+    func refreshStatuses(context: ModelContext) async {
+        guard let statuses = try? await supabaseService.sentLetterStatuses(),
+              !statuses.isEmpty,
+              let drafts = try? context.fetch(FetchDescriptor<LetterDraft>()) else {
+            return
+        }
+        let byRequestId = Dictionary(
+            uniqueKeysWithValues: statuses.map { ($0.clientRequestId, $0) }
+        )
+        var changed = false
+        for draft in drafts {
+            guard let remote = byRequestId[draft.clientRequestId] else { continue }
+            if draft.isRead != remote.isRead
+                || draft.readAt != remote.readAt
+                || draft.archivedAt != remote.archivedAt
+                || draft.deletedAt != remote.deletedAt {
+                draft.isRead = remote.isRead
+                draft.readAt = remote.readAt
+                draft.archivedAt = remote.archivedAt
+                draft.deletedAt = remote.deletedAt
+                changed = true
+            }
+        }
+        if changed { try? context.save() }
     }
 }

@@ -18,16 +18,18 @@ struct PairingService: PairingServiceProtocol {
     }
 
     func loadMembership() async -> MailboxMembership? {
+        if let membership = try? await supabaseService.currentMailboxMembership() {
+            if let data = try? JSONEncoder().encode(membership) {
+                try? await keychain.save(data, account: account)
+            }
+            return membership
+        }
+
         if let data = try? await keychain.read(account: account),
            let membership = try? JSONDecoder().decode(MailboxMembership.self, from: data) {
             return membership
         }
-
-        guard let membership = try? await supabaseService.currentMailboxMembership() else { return nil }
-        if let data = try? JSONEncoder().encode(membership) {
-            try? await keychain.save(data, account: account)
-        }
-        return membership
+        return nil
     }
 
     func claim(code: String) async throws -> MailboxMembership {
@@ -41,6 +43,11 @@ struct PairingService: PairingServiceProtocol {
     }
 
     func disconnect() async throws {
+        guard let membership = await loadMembership(),
+              let mailboxId = membership.mailboxId else {
+            throw AppError.notPaired
+        }
+        try await supabaseService.disconnectMailbox(mailboxId)
         try await keychain.delete(account: account)
     }
 }

@@ -6,7 +6,9 @@ import Supabase
 protocol SupabaseServiceProtocol: Sendable {
     func currentMailboxMembership() async throws -> MailboxMembership?
     func claimPairingCode(_ code: String) async throws -> MailboxMembership
+    func disconnectMailbox(_ mailboxId: UUID) async throws
     func sendLetter(_ payload: LetterPayload) async throws
+    func sentLetterStatuses() async throws -> [SentLetterStatus]
 }
 
 protocol SupabaseBackendClientProtocol: Sendable {
@@ -15,7 +17,9 @@ protocol SupabaseBackendClientProtocol: Sendable {
     func signInAnonymously() async throws
     func currentMailboxMembership() async throws -> MailboxMembership?
     func claimMailboxPairingCode(_ normalizedCode: String) async throws -> MailboxMembership
+    func disconnectSenderMailbox(_ mailboxId: UUID) async throws
     func createMailboxLetter(_ payload: LetterPayload) async throws
+    func sentLetterStatuses() async throws -> [SentLetterStatus]
 }
 
 nonisolated private struct ClaimPairingCodeParams: Encodable, Sendable {
@@ -65,6 +69,7 @@ nonisolated private struct InsertLetterRow: Encodable, Sendable {
 }
 
 nonisolated private struct InsertLetterWithResultRow: Encodable, Sendable {
+    let p_mailbox_id: UUID
     let p_client_request_id: UUID
     let p_title: String
     let p_preview: String
@@ -72,6 +77,17 @@ nonisolated private struct InsertLetterWithResultRow: Encodable, Sendable {
     let p_date_label: String
     let p_published_at: Date
     let p_status: String
+}
+
+nonisolated private struct PublishLetterRow: Encodable, Sendable {
+    let p_mailbox_id: UUID
+    let p_client_request_id: UUID
+    let p_status: String
+    let p_published_at: Date
+}
+
+nonisolated private struct DisconnectMailboxRow: Encodable, Sendable {
+    let p_mailbox_id: UUID
 }
 
 nonisolated private struct CreatedLetterRow: Decodable, Sendable {
@@ -85,6 +101,10 @@ nonisolated private struct InsertAttachmentMetadataRow: Encodable, Sendable {
     let storage_path: String
     let mime_type: String
     let size_bytes: Int
+}
+
+nonisolated private struct AttachmentMetadataRow: Decodable, Sendable {
+    let storage_path: String
 }
 
 struct SupabaseService: SupabaseServiceProtocol {
@@ -152,6 +172,27 @@ struct SupabaseService: SupabaseServiceProtocol {
         } catch {
             throw Self.mapSendError(error)
         }
+    }
+
+    func disconnectMailbox(_ mailboxId: UUID) async throws {
+        guard configuration.isSupabaseConfigured, let backend else {
+            throw AppError.notConfigured
+        }
+        do {
+            try await ensureAuthenticated(backend)
+            try await backend.disconnectSenderMailbox(mailboxId)
+        } catch let appError as AppError {
+            throw appError
+        } catch {
+            if error.isNetworkConnectivityError { throw AppError.offline }
+            throw AppError.secureSessionFailed
+        }
+    }
+
+    func sentLetterStatuses() async throws -> [SentLetterStatus] {
+        guard configuration.isSupabaseConfigured, let backend else { return [] }
+        try await ensureAuthenticated(backend)
+        return try await backend.sentLetterStatuses()
     }
 
     private func ensureAuthenticated(_ backend: SupabaseBackendClientProtocol) async throws {
@@ -270,6 +311,7 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
             .from("mailbox_members")
             .select("mailbox_id, role, mailboxes(display_name)")
             .eq("role", value: "sender")
+            .order("created_at", ascending: false)
             .limit(1)
             .execute()
             .value
@@ -367,11 +409,16 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
         print("MYLOVE_SEND_START")
 
         do {
-            if payload.attachments.isEmpty {
-                try await createLegacyMailboxLetter(payload)
-            } else {
-                let createdLetter = try await createMailboxLetterWithResult(payload)
+            let createdLetter = try await createMailboxLetterWithResult(
+                payload,
+                initialStatus: payload.attachments.isEmpty
+                    ? payload.serverStatus.rawValue
+                    : ServerLetterStatus.draft.rawValue
+            )
+            try await removeExistingAttachments(for: createdLetter)
+            if !payload.attachments.isEmpty {
                 try await uploadAttachments(payload.attachments, for: createdLetter)
+                try await publishMailboxLetter(payload)
             }
 
             print("MYLOVE_SEND_SUCCESS")
@@ -386,30 +433,19 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
         }
     }
 
-    private func createLegacyMailboxLetter(_ payload: LetterPayload) async throws {
-        let row = InsertLetterRow(
-            p_client_request_id: payload.clientRequestId,
-            p_title: payload.title,
-            p_preview: payload.preview,
-            p_body: payload.body,
-            p_date_label: payload.dateLabel,
-            p_published_at: payload.publishedAt
-        )
-
-        try await client
-            .rpc("create_mailbox_letter", params: row)
-            .execute()
-    }
-
-    private func createMailboxLetterWithResult(_ payload: LetterPayload) async throws -> CreatedLetterRow {
+    private func createMailboxLetterWithResult(
+        _ payload: LetterPayload,
+        initialStatus: String
+    ) async throws -> CreatedLetterRow {
         let row = InsertLetterWithResultRow(
+            p_mailbox_id: payload.mailboxId,
             p_client_request_id: payload.clientRequestId,
             p_title: payload.title,
             p_preview: payload.preview,
             p_body: payload.body,
             p_date_label: payload.dateLabel,
             p_published_at: payload.publishedAt,
-            p_status: payload.serverStatus.rawValue
+            p_status: initialStatus
         )
 
         do {
@@ -431,6 +467,18 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
         }
     }
 
+    private func publishMailboxLetter(_ payload: LetterPayload) async throws {
+        let row = PublishLetterRow(
+            p_mailbox_id: payload.mailboxId,
+            p_client_request_id: payload.clientRequestId,
+            p_status: payload.serverStatus.rawValue,
+            p_published_at: payload.publishedAt
+        )
+        try await client
+            .rpc("publish_mailbox_letter", params: row)
+            .execute()
+    }
+
     private func uploadAttachments(_ attachments: [LetterAttachment], for createdLetter: CreatedLetterRow) async throws {
         let validator = AttachmentValidator()
         for attachment in attachments {
@@ -450,7 +498,7 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
                         data: attachment.data,
                         options: FileOptions(
                             contentType: attachment.mimeType,
-                            upsert: false
+                            upsert: true
                         )
                     )
                 objectUploaded = true
@@ -465,7 +513,7 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
 
                 try await client
                     .from("letter_attachments")
-                    .insert(metadata)
+                    .upsert(metadata, onConflict: "storage_path")
                     .execute()
             } catch {
                 if objectUploaded {
@@ -476,6 +524,42 @@ private actor LiveSupabaseBackendClient: SupabaseBackendClientProtocol {
                 throw AppError.attachmentUploadFailed
             }
         }
+    }
+
+    private func removeExistingAttachments(for letter: CreatedLetterRow) async throws {
+        let rows: [AttachmentMetadataRow] = try await client
+            .from("letter_attachments")
+            .select("storage_path")
+            .eq("letter_id", value: letter.letter_id)
+            .execute()
+            .value
+        if !rows.isEmpty {
+            try await client.storage
+                .from("letter-attachments")
+                .remove(paths: rows.map(\.storage_path))
+            try await client
+                .from("letter_attachments")
+                .delete()
+                .eq("letter_id", value: letter.letter_id)
+                .execute()
+        }
+    }
+
+    func disconnectSenderMailbox(_ mailboxId: UUID) async throws {
+        let row = DisconnectMailboxRow(p_mailbox_id: mailboxId)
+        try await client
+            .rpc("disconnect_sender_mailbox", params: row)
+            .execute()
+    }
+
+    func sentLetterStatuses() async throws -> [SentLetterStatus] {
+        try await client
+            .from("letters")
+            .select("client_request_id,is_read,read_at,archived_at,deleted_at")
+            .not("client_request_id", operator: .is, value: "null")
+            .order("created_at", ascending: false)
+            .execute()
+            .value
     }
 
     private func attachmentStoragePath(mailboxId: UUID, letterId: UUID, attachment: LetterAttachment) -> String {
@@ -525,6 +609,11 @@ struct SupabaseErrorSignature: Error, Sendable {
         if isUnauthenticatedOrForbidden { return "auth-or-permission" }
         if contains("invalid_pairing_code") { return "invalid-pairing-code" }
         if contains("rate_limited") { return "rate-limited" }
+        if contains("not_paired") { return "not-paired" }
+        if contains("missing_request_identity") { return "missing-request-identity" }
+        if contains("invalid_letter_status") { return "invalid-letter-status" }
+        if contains("invalid_letter") { return "invalid-letter" }
+        if contains("letter_not_found") { return "letter-not-found" }
         if message.localizedCaseInsensitiveContains("decoding") { return "decoding" }
         return "unknown"
     }
@@ -573,11 +662,13 @@ struct MockSupabaseService: SupabaseServiceProtocol {
 
     func currentMailboxMembership() async throws -> MailboxMembership? { membership }
     func claimPairingCode(_ code: String) async throws -> MailboxMembership { try pairingResult.get() }
+    func disconnectMailbox(_ mailboxId: UUID) async throws { }
     func sendLetter(_ payload: LetterPayload) async throws { try sendResult.get() }
+    func sentLetterStatuses() async throws -> [SentLetterStatus] { [] }
 }
 
 actor MockSupabaseBackendClient: SupabaseBackendClientProtocol {
-    enum Event: Equatable { case hasCurrentSession, restoreValidSession, signInAnonymously, currentMailboxMembership, claimPairingCode, createMailboxLetter }
+    enum Event: Equatable { case hasCurrentSession, restoreValidSession, signInAnonymously, currentMailboxMembership, claimPairingCode, disconnectMailbox, createMailboxLetter, sentLetterStatuses }
 
     var hasSession: Bool
     var events: [Event] = []
@@ -633,8 +724,17 @@ actor MockSupabaseBackendClient: SupabaseBackendClientProtocol {
         return MailboxMembership(recipientName: "Bella", role: "sender")
     }
 
+    func disconnectSenderMailbox(_ mailboxId: UUID) async throws {
+        events.append(.disconnectMailbox)
+    }
+
     func createMailboxLetter(_ payload: LetterPayload) async throws {
         events.append(.createMailboxLetter)
         if let sendError { throw sendError }
+    }
+
+    func sentLetterStatuses() async throws -> [SentLetterStatus] {
+        events.append(.sentLetterStatuses)
+        return []
     }
 }

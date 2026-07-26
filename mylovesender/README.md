@@ -13,9 +13,14 @@ Native SwiftUI-iPhone-App zum Schreiben lokaler Entwuerfe und zum spaeteren Send
 
 ## Supabase-Backend
 
-Die App simuliert keine erfolgreiche Verbindung. Ohne RPC `claim_mailbox_pairing_code` bleibt der Status ehrlich bei `Nicht verbunden` beziehungsweise `Verbindung fehlgeschlagen`. Der sichere Backend-Vorschlag liegt in `Supabase/required_pairing_backend.sql`.
+Das Android-Projekt ist die kanonische Quelle fuer die nummerierten
+Supabase-Migrationen. Fuehre dort `001` bis `004` in dieser Reihenfolge aus.
+`Supabase/004_unified_cross_platform_backend.sql` ist eine identische Kopie der
+plattformuebergreifenden Migration und dient zur Kontrolle im iOS-Projekt.
 
-Damit bearbeitete Briefe in Supabase aktualisiert werden, muss `create_mailbox_letter` den vorhandenen Datensatz anhand von `(mailbox_id, client_request_id)` per `on conflict ... do update` aktualisieren. Die aktuelle SQL-Datei enthaelt diese Aenderung.
+Die App simuliert keine erfolgreiche Verbindung. Ohne die RPCs aus diesen
+Migrationen bleibt der Status ehrlich bei `Nicht verbunden` beziehungsweise
+`Verbindung fehlgeschlagen`.
 
 ## App Icon
 

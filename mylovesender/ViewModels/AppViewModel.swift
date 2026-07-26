@@ -50,9 +50,17 @@ final class AppViewModel {
     }
 
     func disconnect() async {
-        try? await pairingService.disconnect()
-        connectionState = .notConnected
-        pairingMessage = "Die Verbindung wurde getrennt."
+        do {
+            try await pairingService.disconnect()
+            connectionState = .notConnected
+            pairingMessage = "Die Verbindung wurde getrennt."
+        } catch let appError as AppError {
+            connectionState = appError == .offline ? .offline : .failed
+            pairingMessage = appError.userMessage
+        } catch {
+            connectionState = .failed
+            pairingMessage = AppError.sendFailed.userMessage
+        }
     }
 }
 

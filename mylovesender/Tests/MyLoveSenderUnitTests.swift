@@ -86,7 +86,7 @@ struct MyLoveSenderUnitTests {
 
     @Test func draftMapsToPayloadWithoutServerIds() {
         let draft = LetterDraft(title: "Titel", preview: "Kurz", body: "Text", dateLabel: "HEUTE", publishedAt: .now)
-        let payload = LetterPayload(clientRequestId: draft.clientRequestId, title: draft.title, preview: draft.normalizedPreview, body: draft.body, dateLabel: draft.dateLabel, publishedAt: draft.publishedAt ?? .now, serverStatus: .published)
+        let payload = LetterPayload(mailboxId: UUID(), clientRequestId: draft.clientRequestId, title: draft.title, preview: draft.normalizedPreview, body: draft.body, dateLabel: draft.dateLabel, publishedAt: draft.publishedAt ?? .now, serverStatus: .published)
         #expect(payload.clientRequestId == draft.clientRequestId)
         #expect(payload.title == "Titel")
     }
@@ -146,7 +146,7 @@ struct MyLoveSenderUnitTests {
     @Test func editingSentLetterReusesClientRequestIdForServerUpdate() async throws {
         let backend = MockSupabaseBackendClient(hasSession: true)
         let service = SupabaseService(configuration: configuredTestConfiguration, backend: backend)
-        let pairing = StaticPairingService(membership: MailboxMembership(recipientName: "Bella", role: "sender"))
+        let pairing = StaticPairingService(membership: MailboxMembership(recipientName: "Bella", role: "sender", mailboxId: UUID()))
         let repository = LetterRepository(supabaseService: service, pairingService: pairing)
         let container = try ModelContainer(for: LetterDraft.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let draft = LetterDraft(title: "Titel", body: "Text", publishedAt: .now, status: .sent)

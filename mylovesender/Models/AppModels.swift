@@ -270,6 +270,7 @@ struct SupabaseLetterRecord: Decodable, Sendable {
 }
 
 struct LetterPayload: Codable, Sendable {
+    let mailboxId: UUID
     let clientRequestId: UUID
     let title: String
     let preview: String
@@ -280,6 +281,7 @@ struct LetterPayload: Codable, Sendable {
     let attachments: [LetterAttachment]
 
     init(
+        mailboxId: UUID,
         clientRequestId: UUID,
         title: String,
         preview: String,
@@ -289,6 +291,7 @@ struct LetterPayload: Codable, Sendable {
         serverStatus: ServerLetterStatus,
         attachments: [LetterAttachment] = []
     ) {
+        self.mailboxId = mailboxId
         self.clientRequestId = clientRequestId
         self.title = title
         self.preview = preview
@@ -297,6 +300,22 @@ struct LetterPayload: Codable, Sendable {
         self.publishedAt = publishedAt
         self.serverStatus = serverStatus
         self.attachments = attachments
+    }
+}
+
+struct SentLetterStatus: Decodable, Sendable {
+    let clientRequestId: UUID
+    let isRead: Bool
+    let readAt: Date?
+    let archivedAt: Date?
+    let deletedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case clientRequestId = "client_request_id"
+        case isRead = "is_read"
+        case readAt = "read_at"
+        case archivedAt = "archived_at"
+        case deletedAt = "deleted_at"
     }
 }
 
